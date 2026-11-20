@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# CAD models and exports stay local (often proprietary)
+*.[sS][tT][eE][pP]
+*.[sS][tT][pP]
+*.[iI][gG][eE][sS]
+*.[iI][gG][sS]
+*.[bB][rR][eE][pP]
+*.[bB][rR][pP]
+*.[gG][lL][bB]

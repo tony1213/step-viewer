@@ -1,0 +1,26 @@
+{
+  "name": "step-viewer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "浏览器端 STEP / IGES 模型查看器（本地运行，文件不出本机）",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "start": "vite build && vite preview --open",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "occt-import-js": "0.0.23",
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.9.18"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

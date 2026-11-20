@@ -1,0 +1,52 @@
+# STEP 查看器
+
+在浏览器里查看机械 STEP / IGES 模型的本地小工具。模型由 OpenCascade（WebAssembly）在浏览器内解析，**文件不会上传到任何地方**。
+
+## 使用
+
+```bash
+cd ~/work/step_viewer
+npm install        # 只需第一次
+npm start          # 构建并打开浏览器（http://127.0.0.1:5280），终端里 Ctrl+C 结束
+```
+
+把 `.step / .stp / .iges / .igs / .brep` 文件拖进窗口，或点击「打开文件」。13 MB 左右的装配体大约需要 7–10 秒。
+
+## 功能
+
+- **装配结构**：按 STEP 文件还原完整的装配层级（多层子装配、中文零件名），可显示 / 隐藏、仅显示、设为透明、搜索。
+- **查看**：旋转 / 平移 / 以光标为中心缩放，双击设旋转中心，标准视图（1–7 键），透视 / 正交，「上方向」可选 ±X/±Y/±Z。
+- **显示**：着色 + 边线、仅着色、仅边线，按零件着色，X 光。
+- **测量（M）**：
+  - 点击一个面：显示面积和周长。平面的圆弧边界做了精确修正，结果与 SolidWorks 一致。
+  - 依次点击两点：显示距离和 ΔX/ΔY/ΔZ。如果两点所在的面是平行平面，同时给出两平面的垂直距离。
+  - 鼠标靠近孔边时吸附到圆心，并显示孔径。按住 Shift 可关闭吸附。
+- **剖切**：沿 X/Y/Z 方向切开，实体的切面会填充颜色。
+- **爆炸视图**：可按顶层组件或按所有零件拆开。
+- **截图**：导出 PNG（包含测量标注）。
+- **导出 GLB**：只导出可见零件，单位为米。
+
+鼠标操作：左键旋转，右键 / 中键平移，滚轮缩放。快捷键见界面右上角「帮助」。
+
+## 开发
+
+```bash
+npm run dev        # 开发服务器
+npm test           # 单元测试
+STEP_SAMPLE=/path/to/model.STEP npm test   # 额外用真实文件做验收
+npm run build      # 类型检查 + 构建到 dist/
+```
+
+主要目录：
+- `src/core`：纯逻辑，可在 Node 中测试：
+  - STEP 装配结构解析；
+  - B-rep 边线提取与圆识别；
+  - 面积、周长和距离计算。
+- `src/worker`：在 Web Worker 中运行 OpenCascade。
+- `src/viewer`：three.js 场景，以及测量、剖切、爆炸、导出等功能。
+- `src/ui`：装配树和信息面板。
+
+依赖的开源库：
+- [occt-import-js](https://github.com/kovacsv/occt-import-js)（LGPL-2.1，OpenCascade）
+- [three.js](https://threejs.org)
+- [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh)

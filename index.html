@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="在浏览器中查看 STEP / IGES 机械模型：装配树、测量、剖切、爆炸视图。文件只在本机解析。" />
+    <title>STEP 查看器</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div id="app" class="no-model">
+      <header class="toolbar">
+        <div class="tb-group">
+          <button class="btn primary" data-action="open" title="打开 STEP / IGES 文件（也可以直接拖入窗口）">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.5a1 1 0 0 1 1-1h4l1.5 1.8h7.5a1 1 0 0 1 1 1v8.2a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1z" /></svg>
+            打开文件
+          </button>
+          <input type="file" id="file-input" accept=".step,.stp,.STEP,.STP,.iges,.igs,.IGES,.IGS,.brep,.brp" hidden />
+        </div>
+
+        <div class="tb-group" data-needs-model>
+          <button class="btn" data-action="fit" title="适应窗口 (F)">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" /></svg>
+            适应
+          </button>
+          <div class="seg" role="group" aria-label="标准视图">
+            <button data-view="front" title="前视 (1)">前</button>
+            <button data-view="back" title="后视 (2)">后</button>
+            <button data-view="left" title="左视 (3)">左</button>
+            <button data-view="right" title="右视 (4)">右</button>
+            <button data-view="top" title="上视 (5)">上</button>
+            <button data-view="bottom" title="下视 (6)">下</button>
+            <button data-view="iso" title="等轴测 (7)">轴测</button>
+          </div>
+          <label class="field" title="选择模型中朝上的坐标轴（不同 CAD 软件习惯不同）">
+            上方向
+            <select id="up-axis">
+              <option value="+Y">+Y</option>
+              <option value="-Y">−Y</option>
+              <option value="+Z">+Z</option>
+              <option value="-Z">−Z</option>
+              <option value="+X">+X</option>
+              <option value="-X">−X</option>
+            </select>
+          </label>
+          <button class="btn toggle" data-action="projection" title="切换透视 / 正交投影 (P)">正交</button>
+        </div>
+
+        <div class="tb-group" data-needs-model>
+          <label class="field">
+            显示
+            <select id="display-mode">
+              <option value="shaded-edges">着色 + 边线</option>
+              <option value="shaded">仅着色</option>
+              <option value="edges">仅边线</option>
+            </select>
+          </label>
+          <button class="btn toggle" data-action="color-by-part" title="给每种零件分配不同颜色">按零件着色</button>
+          <button class="btn toggle" data-action="xray" title="整体半透明，看到内部 (X)">X 光</button>
+        </div>
+
+        <div class="tb-group" data-needs-model>
+          <button class="btn toggle" data-action="measure" title="测量距离、面积、孔径 (M)">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 13.5l11-11 4 4-11 11zM6 10l1.5 1.5M8.5 7.5 10 9M11 5l1.5 1.5" /></svg>
+            测量
+          </button>
+          <button class="btn toggle" data-action="section" title="剖切视图">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5 10 3l7 3.5v7L10 17l-7-3.5zM10 3v14" /></svg>
+            剖切
+          </button>
+          <button class="btn toggle" data-action="explode" title="爆炸视图">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 8h4v4H8zM3 3l3 3M17 3l-3 3M3 17l3-3M17 17l-3-3" /></svg>
+            爆炸
+          </button>
+        </div>
+
+        <div class="tb-group" data-needs-model>
+          <button class="btn" data-action="screenshot" title="把当前视图保存为 PNG 图片">截图</button>
+          <button class="btn" data-action="export-glb" title="导出可见零件为 GLB（可用任意 3D 查看器打开）">导出 GLB</button>
+        </div>
+
+        <div class="tb-spacer"></div>
+        <button class="btn ghost" data-action="help" title="鼠标操作与快捷键">帮助</button>
+      </header>
+
+      <aside class="panel left" aria-label="装配结构">
+        <div class="panel-head">
+          <span class="panel-title">装配结构</span>
+          <div class="panel-actions">
+            <button class="icon-btn" data-action="expand-all" title="全部展开">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 8l4 4 4-4" /></svg>
+            </button>
+            <button class="icon-btn" data-action="collapse-all" title="全部折叠">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 6l4 4-4 4" /></svg>
+            </button>
+            <button class="icon-btn" data-action="show-all" title="全部显示 (Shift+H)">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M1.5 10S5 4.5 10 4.5 18.5 10 18.5 10 15 15.5 10 15.5 1.5 10 1.5 10z" /><circle cx="10" cy="10" r="2.5" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="search">
+          <input id="tree-search" type="search" placeholder="搜索零件名称…" autocomplete="off" />
+        </div>
+        <div id="tree" class="tree" role="tree"></div>
+      </aside>
+
+      <main id="viewport">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-card">
+            <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 6 54 18v28L32 58 10 46V18zM10 18l22 12 22-12M32 30v28" /></svg>
+            <h1>拖入 STEP / IGES 文件</h1>
+            <p>或点击左上角「打开文件」。支持 .step .stp .iges .igs .brep</p>
+            <p class="muted">文件只在本机浏览器内解析，不会上传到任何地方。</p>
+            <button class="btn primary" data-action="open">选择文件</button>
+          </div>
+        </div>
+
+        <div id="drop-overlay" class="drop-overlay" hidden><div>松开鼠标即可打开</div></div>
+
+        <div id="loading" class="loading" hidden>
+          <div class="loading-card">
+            <div class="loading-file" id="loading-file"></div>
+            <div class="loading-stage" id="loading-stage"></div>
+            <div class="progress"><div class="progress-bar"></div></div>
+            <div class="loading-foot">
+              <span id="loading-time" class="muted"></span>
+              <button class="btn" data-action="cancel-load">取消</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="toast" class="toast" role="alert" hidden>
+          <span id="toast-text"></span>
+          <button class="icon-btn" data-action="close-toast" title="关闭">✕</button>
+        </div>
+
+        <div id="measure-hint" class="hint-bar" hidden>
+          点击模型表面取点：第 1 点显示面积 / 周长，第 2 点显示距离。靠近圆形边时吸附到圆心，按住 Shift 关闭吸附，Esc 取消。
+        </div>
+
+        <div id="section-panel" class="float-panel" hidden>
+          <div class="float-head">剖切<button class="icon-btn" data-action="section" title="关闭剖切">✕</button></div>
+          <div class="row">
+            <span class="label">方向</span>
+            <div class="seg small" id="section-axis">
+              <button data-axis="x">X</button><button data-axis="y">Y</button><button data-axis="z">Z</button>
+            </div>
+            <label class="check"><input type="checkbox" id="section-flip" /> 反向</label>
+          </div>
+          <div class="row">
+            <input type="range" id="section-range" min="0" max="1000" step="1" value="500" />
+          </div>
+          <div class="row">
+            <span class="label">位置</span>
+            <input type="number" id="section-value" step="0.5" />
+            <span class="muted">mm</span>
+            <label class="check"><input type="checkbox" id="section-show-plane" checked /> 显示截面框</label>
+          </div>
+        </div>
+
+        <div id="explode-panel" class="float-panel" hidden>
+          <div class="float-head">爆炸视图<button class="icon-btn" data-action="explode" title="关闭爆炸视图">✕</button></div>
+          <div class="row">
+            <span class="label">程度</span>
+            <input type="range" id="explode-range" min="0" max="100" step="1" value="0" />
+            <span id="explode-value" class="value">0%</span>
+          </div>
+          <div class="row">
+            <span class="label">按</span>
+            <div class="seg small" id="explode-level">
+              <button data-level="top">顶层组件</button><button data-level="parts">所有零件</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="help-panel" class="float-panel help" hidden>
+          <div class="float-head">鼠标与快捷键<button class="icon-btn" data-action="help" title="关闭">✕</button></div>
+          <table>
+            <tr><td>左键拖动</td><td>旋转</td></tr>
+            <tr><td>右键 / 中键拖动</td><td>平移</td></tr>
+            <tr><td>滚轮</td><td>以光标处为中心缩放</td></tr>
+            <tr><td>单击</td><td>选中零件</td></tr>
+            <tr><td>双击</td><td>把该点设为旋转中心</td></tr>
+            <tr><td>F</td><td>适应窗口</td></tr>
+            <tr><td>Z</td><td>缩放到选中零件</td></tr>
+            <tr><td>1 – 7</td><td>前 / 后 / 左 / 右 / 上 / 下 / 轴测</td></tr>
+            <tr><td>H / Shift+H</td><td>隐藏选中 / 全部显示</td></tr>
+            <tr><td>I</td><td>仅显示选中</td></tr>
+            <tr><td>T</td><td>选中零件透明 / 不透明</td></tr>
+            <tr><td>X / P</td><td>X 光 / 透视与正交</td></tr>
+            <tr><td>M</td><td>测量</td></tr>
+            <tr><td>Esc</td><td>取消测量点 / 清除选择</td></tr>
+          </table>
+        </div>
+      </main>
+
+      <aside class="panel right" aria-label="属性">
+        <section class="card">
+          <h2>选中对象</h2>
+          <div id="selection-info" class="info"><p class="muted">在模型或装配结构中单击零件。</p></div>
+        </section>
+        <section class="card" id="measure-card" hidden>
+          <h2>测量 <button class="link-btn" data-action="clear-measure">清除全部</button></h2>
+          <div id="measure-info" class="info"></div>
+        </section>
+        <section class="card">
+          <h2>模型</h2>
+          <div id="model-info" class="info"><p class="muted">尚未打开文件。</p></div>
+        </section>
+      </aside>
+
+      <footer class="statusbar">
+        <span id="status-hint">左键旋转 · 右键平移 · 滚轮缩放 · 双击设旋转中心</span>
+        <span id="status-stats"></span>
+      </footer>
+    </div>
+
+    <div id="context-menu" class="context-menu" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
