@@ -2,7 +2,9 @@
 
 在浏览器里查看机械 STEP / IGES 模型的本地小工具。模型由 OpenCascade（WebAssembly）在浏览器内解析，**文件不会上传到任何地方**。
 
-## 使用
+**在线使用：<https://tony1213.github.io/step-viewer/>**，打开后把文件拖进页面即可。
+
+## 本地运行
 
 ```bash
 cd ~/work/step_viewer
@@ -36,6 +38,8 @@ npm test           # 单元测试
 STEP_SAMPLE=/path/to/model.STEP npm test   # 额外用真实文件做验收
 npm run build      # 类型检查 + 构建到 dist/
 ```
+
+推送到 `main` 后，GitHub Actions（`.github/workflows/deploy.yml`）会测试、构建并部署到 GitHub Pages。
 
 主要目录：
 - `src/core`：纯逻辑，可在 Node 中测试：
