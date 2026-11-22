@@ -8,17 +8,21 @@ export function convertMesh(m: OcctMesh): MeshData {
   const position = Float32Array.from(m.attributes.position.array);
   const normal = m.attributes.normal ? Float32Array.from(m.attributes.normal.array) : null;
   const index = Uint32Array.from(m.index.array);
-  const faceRanges = new Uint32Array(m.brep_faces.length * 2);
+  // Faces OpenCascade could not triangulate come back as first..first-1 (last = -1 for a mesh without
+  // any triangles, which would wrap to 2^32-1 in a Uint32Array). Keep only faces that own triangles.
+  const triangleCount = index.length / 3;
+  const faces = m.brep_faces.filter((f) => f.first >= 0 && f.last >= f.first && f.last < triangleCount);
+  const faceRanges = new Uint32Array(faces.length * 2);
   let hasFaceColor = false;
-  m.brep_faces.forEach((f, i) => {
+  faces.forEach((f, i) => {
     faceRanges[2 * i] = f.first;
     faceRanges[2 * i + 1] = f.last;
     if (f.color) hasFaceColor = true;
   });
   let faceColors: Float32Array | null = null;
   if (hasFaceColor) {
-    faceColors = new Float32Array(m.brep_faces.length * 3).fill(Number.NaN);
-    m.brep_faces.forEach((f, i) => {
+    faceColors = new Float32Array(faces.length * 3).fill(Number.NaN);
+    faces.forEach((f, i) => {
       if (f.color) faceColors!.set(f.color, 3 * i);
     });
   }
