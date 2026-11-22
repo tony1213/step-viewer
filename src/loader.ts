@@ -1,5 +1,5 @@
 import type { ImportResult, ModelFormat } from './core/types';
-import type { Stage, WorkerRequest, WorkerResponse } from './worker/protocol';
+import type { Stage, StageInfo, WorkerRequest, WorkerResponse } from './worker/protocol';
 
 export class CancelledError extends Error {
   constructor() {
@@ -27,7 +27,7 @@ export class ModelLoader {
   private worker: Worker | null = null;
   private rejectCurrent: ((e: Error) => void) | null = null;
 
-  load(fileName: string, buffer: ArrayBuffer, onStage: (stage: Stage) => void): Promise<ImportResult> {
+  load(fileName: string, buffer: ArrayBuffer, onStage: (stage: Stage, info: StageInfo) => void, split?: boolean): Promise<ImportResult> {
     this.cancel();
     const format = detectFormat(fileName, new Uint8Array(buffer));
     return new Promise((resolve, reject) => {
@@ -44,7 +44,7 @@ export class ModelLoader {
       worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
         const msg = ev.data;
         if (msg.type === 'stage') {
-          onStage(msg.stage);
+          onStage(msg.stage, { progress: msg.progress, detail: msg.detail });
         } else if (msg.type === 'result') {
           finish();
           resolve(msg.result);
@@ -58,7 +58,7 @@ export class ModelLoader {
         finish();
         reject(new Error(ev.message ? `解析引擎出错：${ev.message}` : '解析引擎加载失败。'));
       };
-      const req: WorkerRequest = { type: 'import', format, buffer };
+      const req: WorkerRequest = { type: 'import', format, buffer, split };
       worker.postMessage(req, [buffer]);
     });
   }

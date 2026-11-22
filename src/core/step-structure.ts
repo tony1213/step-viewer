@@ -20,12 +20,29 @@ export interface StepProductDef {
   shells: number;
   /** child PRODUCT_DEFINITION ids, one per NEXT_ASSEMBLY_USAGE_OCCURRENCE, in file order */
   children: number[];
+  /** the NEXT_ASSEMBLY_USAGE_OCCURRENCE ids behind `children` (same order) */
+  nauos: number[];
+  /** SHAPE_DEFINITION_REPRESENTATION ids of this definition, and the representations they name */
+  sdrs: number[];
+  reps: number[];
+}
+
+/** A plain SHAPE_REPRESENTATION_RELATIONSHIP between two representations (no transformation). */
+export interface RepLink {
+  srr: number;
+  other: number;
 }
 
 export interface StepStructure {
   /** product definitions that are not used as a child of any assembly */
   roots: number[];
   defs: Map<number, StepProductDef>;
+  /** the scanned file (used to cut parts out of very large files) */
+  index: StepIndex;
+  /** NEXT_ASSEMBLY_USAGE_OCCURRENCE id -> representation relationship (with transformation) placing it */
+  placements: Map<number, number>;
+  /** representation id -> plain relationships to other representations */
+  repLinks: Map<number, RepLink[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,9 +147,10 @@ export function decodeStepString(raw: string): string {
 // Parameter list parser
 // ---------------------------------------------------------------------------
 
-type StepValue = StepValue[] | { s: string } | { r: number } | { e: string } | { t: string; v: StepValue } | number | null;
+export type StepValue = StepValue[] | { s: string } | { r: number } | { e: string } | { t: string; v: StepValue } | number | null;
 
-function parseParams(str: string, start: number): StepValue[] {
+/** Parse the parenthesised parameter list that starts at `start`; also returns the offset after it. */
+export function parseListAt(str: string, start: number): { list: StepValue[]; end: number } {
   let i = start;
   const n = str.length;
   const ws = () => {
@@ -210,12 +228,12 @@ function parseParams(str: string, start: number): StepValue[] {
   ws();
   const v = value();
   if (!Array.isArray(v)) throw new Error('STEP 参数格式错误');
-  return v;
+  return { list: v, end: i };
 }
 
-const ref = (v: StepValue | undefined): number | null => (v && typeof v === 'object' && 'r' in v ? v.r : null);
-const str = (v: StepValue | undefined): string => (v && typeof v === 'object' && 's' in v ? v.s : '');
-const list = (v: StepValue | undefined): StepValue[] => (Array.isArray(v) ? v : []);
+export const ref = (v: StepValue | undefined): number | null => (v && typeof v === 'object' && 'r' in v ? v.r : null);
+export const str = (v: StepValue | undefined): string => (v && typeof v === 'object' && 's' in v ? v.s : '');
+export const list = (v: StepValue | undefined): StepValue[] => (Array.isArray(v) ? v : []);
 
 // ---------------------------------------------------------------------------
 // File scan
@@ -237,9 +255,10 @@ const WANTED = new Set([
   'FACETED_BREP',
   'MAPPED_ITEM',
   'REPRESENTATION_MAP',
+  'CONTEXT_DEPENDENT_SHAPE_REPRESENTATION',
 ]);
 
-const isRepresentation = (type: string) => type === 'SHAPE_REPRESENTATION' || type.endsWith('_SHAPE_REPRESENTATION');
+export const isRepresentation = (type: string) => type === 'SHAPE_REPRESENTATION' || type.endsWith('_SHAPE_REPRESENTATION');
 
 interface Entity {
   type: string;
@@ -255,14 +274,57 @@ function bytesToLatin1(bytes: Uint8Array): string {
   return parts.join('');
 }
 
-function scanEntities(text: string): Map<number, Entity> {
-  const entities = new Map<number, Entity>();
+/** Where every entity instance of the DATA section is: statement k is `text.slice(starts[k], ends[k])` (without `;`). */
+export interface StepIndex {
+  bytes: Uint8Array;
+  /** latin1 view of the file: one char per byte, so offsets are byte offsets */
+  text: string;
+  /** the file up to and including `DATA;` */
+  header: string;
+  count: number;
+  ids: Int32Array;
+  starts: Uint32Array;
+  ends: Uint32Array;
+  /** index into typeNames per entity; complex instances have the type '' */
+  typeOf: Uint16Array;
+  typeNames: string[];
+  /** entity id -> k, or -1 */
+  find(id: number): number;
+}
+
+const growInt32 = (a: Int32Array, n: number) => {
+  const b = new Int32Array(n);
+  b.set(a);
+  return b;
+};
+const growUint32 = (a: Uint32Array, n: number) => {
+  const b = new Uint32Array(n);
+  b.set(a);
+  return b;
+};
+const growUint16 = (a: Uint16Array, n: number) => {
+  const b = new Uint16Array(n);
+  b.set(a);
+  return b;
+};
+
+export function indexEntities(bytes: Uint8Array): StepIndex {
+  const text = bytesToLatin1(bytes);
   const data = /(?:^|[\r\n;])\s*DATA\s*;/.exec(text);
   if (!data) throw new Error('不是有效的 STEP 文件（缺少 DATA 段）');
-  const head = /^\s*#(\d+)\s*=\s*([A-Z_0-9]*)\s*\(/;
-  let stmtStart = data.index + data[0].length;
+  const dataEnd = data.index + data[0].length;
+  let cap = 4096;
+  let ids = new Int32Array(cap);
+  let starts = new Uint32Array(cap);
+  let ends = new Uint32Array(cap);
+  let typeOf = new Uint16Array(cap);
+  const typeNames: string[] = [];
+  const typeCodes = new Map<string, number>();
+  let count = 0;
+  let maxId = 0;
+  let stmtStart = dataEnd;
   let inString = false;
-  for (let i = stmtStart; i < text.length; i++) {
+  for (let i = dataEnd; i < text.length; i++) {
     const c = text.charCodeAt(i);
     if (inString) {
       if (c === 39) inString = false; // '' is handled as close+open
@@ -280,16 +342,153 @@ function scanEntities(text: string): Map<number, Entity> {
       continue;
     }
     if (c !== 59) continue; // ;
-    const stmt = text.slice(stmtStart, i);
+    let s = stmtStart;
     stmtStart = i + 1;
-    const m = head.exec(stmt);
-    if (!m) {
-      if (stmt.trim() === 'ENDSEC') break;
+    for (;;) {
+      // whitespace and comments in front of the statement
+      while (s < i && text.charCodeAt(s) <= 32) s++;
+      if (text.charCodeAt(s) !== 47 || text.charCodeAt(s + 1) !== 42) break;
+      const end = text.indexOf('*/', s + 2);
+      s = end < 0 || end > i ? i : end + 2;
+    }
+    if (text.charCodeAt(s) !== 35) {
+      // not "#id = ..."
+      if (text.startsWith('ENDSEC', s)) break;
       continue;
     }
-    const type = m[2];
-    if (!type || !(WANTED.has(type) || isRepresentation(type))) continue; // complex / uninteresting
-    entities.set(Number(m[1]), { type, args: parseParams(stmt, m[0].length - 1) });
+    let j = s + 1;
+    let id = 0;
+    for (; j < i; j++) {
+      const d = text.charCodeAt(j) - 48;
+      if (d < 0 || d > 9) break;
+      id = id * 10 + d;
+    }
+    if (j === s + 1) continue;
+    while (j < i && text.charCodeAt(j) <= 32) j++;
+    if (text.charCodeAt(j) !== 61) continue; // =
+    j++;
+    while (j < i && text.charCodeAt(j) <= 32) j++;
+    let t = j;
+    for (; t < i; t++) {
+      const ch = text.charCodeAt(t);
+      if (!((ch >= 65 && ch <= 90) || (ch >= 48 && ch <= 57) || ch === 95)) break;
+    }
+    const type = text.slice(j, t);
+    let code = typeCodes.get(type);
+    if (code === undefined) {
+      code = typeNames.length;
+      typeNames.push(type);
+      typeCodes.set(type, code);
+    }
+    if (count === cap) {
+      cap *= 2;
+      ids = growInt32(ids, cap);
+      starts = growUint32(starts, cap);
+      ends = growUint32(ends, cap);
+      typeOf = growUint16(typeOf, cap);
+    }
+    ids[count] = id;
+    starts[count] = s;
+    ends[count] = i;
+    typeOf[count] = code;
+    count++;
+    if (id > maxId) maxId = id;
+  }
+  ids = ids.subarray(0, count);
+  let find: (id: number) => number;
+  if (maxId <= count * 8 + 1_000_000) {
+    const slot = new Int32Array(maxId + 1).fill(-1);
+    for (let k = 0; k < count; k++) slot[ids[k]] = k;
+    find = (id) => (id >= 0 && id <= maxId ? slot[id] : -1);
+  } else {
+    // very sparse ids
+    const map = new Map<number, number>();
+    for (let k = 0; k < count; k++) map.set(ids[k], k);
+    find = (id) => map.get(id) ?? -1;
+  }
+  return {
+    bytes,
+    text,
+    header: text.slice(0, dataEnd),
+    count,
+    ids,
+    starts: starts.subarray(0, count),
+    ends: ends.subarray(0, count),
+    typeOf: typeOf.subarray(0, count),
+    typeNames,
+    find,
+  };
+}
+
+export const typeName = (ix: StepIndex, k: number): string => ix.typeNames[ix.typeOf[k]];
+
+/** Parameters of a simple entity instance. */
+export function entityArgs(ix: StepIndex, k: number): StepValue[] {
+  let i = ix.starts[k];
+  while (ix.text.charCodeAt(i) !== 40) i++; // the "(" after the type name
+  return parseListAt(ix.text, i).list;
+}
+
+/** A simple or complex entity instance as partial entity type -> parameters. */
+export function entityParts(ix: StepIndex, k: number): Map<string, StepValue[]> {
+  const type = typeName(ix, k);
+  if (type) return new Map([[type, entityArgs(ix, k)]]);
+  const t = ix.text;
+  const end = ix.ends[k];
+  let i = ix.starts[k];
+  while (t.charCodeAt(i) !== 40) i++; // "=(" of the complex instance
+  i++;
+  const parts = new Map<string, StepValue[]>();
+  for (;;) {
+    while (i < end && t.charCodeAt(i) <= 32) i++;
+    let j = i;
+    for (; j < end; j++) {
+      const ch = t.charCodeAt(j);
+      if (!((ch >= 65 && ch <= 90) || (ch >= 48 && ch <= 57) || ch === 95)) break;
+    }
+    if (j === i) break; // ")" or malformed
+    const res = parseListAt(t, j);
+    parts.set(t.slice(i, j), res.list);
+    i = res.end;
+  }
+  return parts;
+}
+
+/** Appends the ids referenced by entity k (every #n outside string literals). */
+export function entityRefs(ix: StepIndex, k: number, out: number[]): void {
+  const t = ix.text;
+  const end = ix.ends[k];
+  let i = ix.starts[k] + 1;
+  while (i < end && t.charCodeAt(i) !== 61) i++; // skip "#id ="
+  let inString = false;
+  for (; i < end; i++) {
+    const c = t.charCodeAt(i);
+    if (inString) {
+      if (c === 39) inString = false;
+      continue;
+    }
+    if (c === 39) {
+      inString = true;
+      continue;
+    }
+    if (c !== 35) continue;
+    let id = 0;
+    let j = i + 1;
+    for (; j < end; j++) {
+      const d = t.charCodeAt(j) - 48;
+      if (d < 0 || d > 9) break;
+      id = id * 10 + d;
+    }
+    if (j > i + 1) out.push(id);
+    i = j - 1;
+  }
+}
+
+function scanEntities(ix: StepIndex): Map<number, Entity> {
+  const entities = new Map<number, Entity>();
+  const wanted = ix.typeNames.map((t) => t !== '' && (WANTED.has(t) || isRepresentation(t)));
+  for (let k = 0; k < ix.count; k++) {
+    if (wanted[ix.typeOf[k]]) entities.set(ix.ids[k], { type: typeName(ix, k), args: entityArgs(ix, k) });
   }
   return entities;
 }
@@ -299,15 +498,18 @@ function scanEntities(text: string): Map<number, Entity> {
 // ---------------------------------------------------------------------------
 
 export function parseStepStructure(bytes: Uint8Array): StepStructure {
-  const ents = scanEntities(bytesToLatin1(bytes));
+  const index = indexEntities(bytes);
+  const ents = scanEntities(index);
 
   const productNames = new Map<number, { name: string; productId: string }>();
   const formationProduct = new Map<number, number>();
   const pdFormation = new Map<number, number>();
-  const nauos: { parent: number; child: number }[] = [];
+  const nauos: { id: number; parent: number; child: number }[] = [];
   const pdsDefinition = new Map<number, number>(); // PRODUCT_DEFINITION_SHAPE -> definition
-  const sdr: { definition: number; rep: number }[] = [];
-  const repLinks = new Map<number, number[]>();
+  const shapeOfDefinition = new Map<number, number>(); // definition (e.g. NAUO) -> PRODUCT_DEFINITION_SHAPE
+  const cdsr = new Map<number, number>(); // PRODUCT_DEFINITION_SHAPE of an occurrence -> placing relationship
+  const sdr: { id: number; definition: number; rep: number }[] = [];
+  const repLinks = new Map<number, RepLink[]>();
 
   for (const [id, e] of ents) {
     const a = e.args;
@@ -330,18 +532,27 @@ export function parseStepStructure(bytes: Uint8Array): StepStructure {
       case 'NEXT_ASSEMBLY_USAGE_OCCURRENCE': {
         const parent = ref(a[3]);
         const child = ref(a[4]);
-        if (parent !== null && child !== null) nauos.push({ parent, child });
+        if (parent !== null && child !== null) nauos.push({ id, parent, child });
         break;
       }
       case 'PRODUCT_DEFINITION_SHAPE': {
         const d = ref(a[2]);
-        if (d !== null) pdsDefinition.set(id, d);
+        if (d !== null) {
+          pdsDefinition.set(id, d);
+          if (!shapeOfDefinition.has(d)) shapeOfDefinition.set(d, id);
+        }
+        break;
+      }
+      case 'CONTEXT_DEPENDENT_SHAPE_REPRESENTATION': {
+        const rel = ref(a[0]);
+        const pds = ref(a[1]);
+        if (rel !== null && pds !== null) cdsr.set(pds, rel);
         break;
       }
       case 'SHAPE_DEFINITION_REPRESENTATION': {
         const d = ref(a[0]);
         const r = ref(a[1]);
-        if (d !== null && r !== null) sdr.push({ definition: d, rep: r });
+        if (d !== null && r !== null) sdr.push({ id, definition: d, rep: r });
         break;
       }
       case 'SHAPE_REPRESENTATION_RELATIONSHIP': {
@@ -356,7 +567,7 @@ export function parseStepStructure(bytes: Uint8Array): StepStructure {
           ]) {
             let arr = repLinks.get(x);
             if (!arr) repLinks.set(x, (arr = []));
-            arr.push(y);
+            arr.push({ srr: id, other: y });
           }
         }
         break;
@@ -368,15 +579,30 @@ export function parseStepStructure(bytes: Uint8Array): StepStructure {
   for (const [pd, f] of pdFormation) {
     const p = formationProduct.get(f);
     const names = p !== undefined ? productNames.get(p) : undefined;
-    defs.set(pd, { id: pd, name: names?.name ?? '', productId: names?.productId ?? '', solids: 0, shells: 0, children: [] });
+    defs.set(pd, {
+      id: pd,
+      name: names?.name ?? '',
+      productId: names?.productId ?? '',
+      solids: 0,
+      shells: 0,
+      children: [],
+      nauos: [],
+      sdrs: [],
+      reps: [],
+    });
   }
 
   const childSet = new Set<number>();
+  const placements = new Map<number, number>();
   for (const n of nauos) {
     const parent = defs.get(n.parent);
     if (!parent || !defs.has(n.child)) continue;
     parent.children.push(n.child);
+    parent.nauos.push(n.id);
     childSet.add(n.child);
+    const pds = shapeOfDefinition.get(n.id);
+    const rel = pds !== undefined ? cdsr.get(pds) : undefined;
+    if (rel !== undefined) placements.set(n.id, rel);
   }
 
   const countBodies = (rep: number, seen: Set<number>): { solids: number; shells: number } => {
@@ -402,7 +628,7 @@ export function parseStepStructure(bytes: Uint8Array): StepStructure {
         }
       }
     }
-    for (const other of repLinks.get(rep) ?? []) {
+    for (const { other } of repLinks.get(rep) ?? []) {
       const oe = ents.get(other);
       // follow links to geometry representations only (not to other parts' plain SHAPE_REPRESENTATIONs)
       if (!oe || oe.type === 'SHAPE_REPRESENTATION') continue;
@@ -413,17 +639,19 @@ export function parseStepStructure(bytes: Uint8Array): StepStructure {
     return res;
   };
 
-  for (const { definition, rep } of sdr) {
+  for (const { id, definition, rep } of sdr) {
     const pd = pdsDefinition.get(definition);
     const def = pd !== undefined ? defs.get(pd) : undefined;
     if (!def) continue; // PRODUCT_DEFINITION_SHAPE of an assembly occurrence, not of a product
+    def.sdrs.push(id);
+    def.reps.push(rep);
     const b = countBodies(rep, new Set());
     def.solids += b.solids;
     def.shells += b.shells;
   }
 
   const roots = [...defs.keys()].filter((id) => !childSet.has(id));
-  return { roots, defs };
+  return { roots, defs, index, placements, repLinks };
 }
 
 // ---------------------------------------------------------------------------
@@ -441,9 +669,9 @@ function nameMatches(occtName: string, def: StepProductDef): boolean {
   return n === norm(def.name) || n === norm(def.productId);
 }
 
-const displayName = (def: StepProductDef) => def.name || def.productId;
+export const displayName = (def: StepProductDef) => def.name || def.productId;
 
-function prune(node: SceneNode): boolean {
+export function prune(node: SceneNode): boolean {
   node.children = node.children.filter(prune);
   return node.meshes.length > 0 || node.children.length > 0;
 }

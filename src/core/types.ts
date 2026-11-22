@@ -47,6 +47,15 @@ export interface ImportStats {
   meshCount: number;
   /** 'step' = full assembly tree rebuilt from the STEP product structure; 'flat' = OpenCascade's simplified tree */
   hierarchy: 'step' | 'partial' | 'flat';
+  /** set when a large STEP file was read part by part (see core/step-split.ts) */
+  split?: {
+    parts: number;
+    instances: number;
+    /** names of parts OpenCascade could not mesh */
+    failed: string[];
+    /** occurrences whose placement could not be read (shown at their parent's origin) */
+    unplaced: number;
+  };
 }
 
 export interface ImportResult {

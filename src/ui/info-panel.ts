@@ -145,11 +145,17 @@ export class InfoPanel {
         s.hierarchy === 'partial' ? '部分子装配无法还原层级，' : '未能还原完整装配层级，'
       }这些部分按 OpenCascade 的简化结构显示（不影响几何与测量）。</div>`;
     }
+    if (s.split?.failed.length) {
+      notice += `<div class="notice">${fmtInt(s.split.failed.length)} 个零件未能生成网格，未显示：${esc(s.split.failed.join('、'))}</div>`;
+    }
+    if (s.split?.unplaced) {
+      notice += `<div class="notice">${fmtInt(s.split.unplaced)} 个实例缺少位置信息，显示在所属装配的原点。</div>`;
+    }
     el.innerHTML =
       `<dl>` +
       `<dt>文件</dt><dd>${esc(model.fileName)}</dd>` +
       (extra ? `<dt>大小</dt><dd>${fmtSize(extra.fileSize)}</dd>` : '') +
-      `<dt>格式</dt><dd>${s.format.toUpperCase()}</dd>` +
+      `<dt>格式</dt><dd>${s.format.toUpperCase()}${s.split ? `（按零件解析，${fmtInt(s.split.parts)} 种零件）` : ''}</dd>` +
       `<dt>零件 / 实体</dt><dd>${fmtInt(model.partCount())} / ${fmtInt(s.meshCount)}</dd>` +
       `<dt>三角面</dt><dd>${fmtInt(s.triangles)}</dd>` +
       `<dt>总尺寸</dt><dd>${size(box)}</dd>` +

@@ -14,6 +14,8 @@ npm start          # 构建并打开浏览器（http://127.0.0.1:5280），终�
 
 把 `.step / .stp / .iges / .igs / .brep` 文件拖进窗口，或点击「打开文件」。13 MB 左右的装配体大约需要 7–10 秒。
 
+**大文件**：浏览器里的 OpenCascade 最多只能用 2 GB 内存，一次读不下 40–60 MB 以上的 STEP。超过 30 MB 的 STEP 会自动按零件拆开，多个线程并行解析，再按装配关系摆放；重复使用的零件只解析一次。130 MB、1200 多个零件实例的装配体大约需要 50 秒。
+
 ## 功能
 
 - **装配结构**：按 STEP 文件还原完整的装配层级（多层子装配、中文零件名），可显示 / 隐藏、仅显示、设为透明、搜索。
@@ -35,18 +37,21 @@ npm start          # 构建并打开浏览器（http://127.0.0.1:5280），终�
 ```bash
 npm run dev        # 开发服务器
 npm test           # 单元测试
-STEP_SAMPLE=/path/to/model.STEP npm test   # 额外用真实文件做验收
+STEP_SAMPLE=/path/to/model.STEP npm test   # 额外用真实文件做验收（含按零件读取与整体读取的对比）
+STEP_SAMPLE_LARGE=/path/to/big.STEP npm test   # 大文件按零件读取的验收（几分钟）
 npm run build      # 类型检查 + 构建到 dist/
 ```
+
+页面地址加 `?split=1` 或 `?split=0`，可以强制或禁止按零件读取，用于排查问题。
 
 推送到 `main` 后，GitHub Actions（`.github/workflows/deploy.yml`）会测试、构建并部署到 GitHub Pages。
 
 主要目录：
 - `src/core`：纯逻辑，可在 Node 中测试：
-  - STEP 装配结构解析；
+  - STEP 装配结构解析；大文件按零件拆分和摆放（`step-split.ts`）；
   - B-rep 边线提取与圆识别；
   - 面积、周长和距离计算。
-- `src/worker`：在 Web Worker 中运行 OpenCascade。
+- `src/worker`：在 Web Worker 中运行 OpenCascade（大文件再分给多个 `mesh.worker` 并行处理）。
 - `src/viewer`：three.js 场景，以及测量、剖切、爆炸、导出等功能。
 - `src/ui`：装配树和信息面板。
 

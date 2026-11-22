@@ -11,7 +11,7 @@ import { Model, type DisplayMode, type NodeInfo } from './viewer/model';
 import { buildBVHInBackground, pick } from './viewer/picking';
 import { SectionTool, type Axis } from './viewer/section';
 import { Viewer, type UpAxis, type ViewName } from './viewer/viewer';
-import type { Stage } from './worker/protocol';
+import type { Stage, StageInfo } from './worker/protocol';
 
 const STAGE_TEXT: Record<Stage | 'download' | 'build', string> = {
   download: '正在读取文件…',
@@ -54,6 +54,8 @@ class App {
   private loadSize = 0;
   private loadStage: Stage | 'download' | 'build' = 'download';
   private stageStart = 0;
+  /** measured progress inside the current stage (part-by-part reading), null = estimate from time */
+  private stageFraction: number | null = null;
 
   private readonly el = {
     app: $('#app'),
@@ -158,11 +160,19 @@ class App {
     const size = buffer.byteLength;
     this.showLoading(name, size, t0);
     try {
-      const result = await this.loader.load(name, buffer, (stage) => this.setStage(stage));
+      // ?split=1 / ?split=0 forces / forbids reading STEP files part by part (default: by file size)
+      const splitParam = new URLSearchParams(location.search).get('split');
+      const split = splitParam === '1' ? true : splitParam === '0' ? false : undefined;
+      const result = await this.loader.load(name, buffer, (stage, info) => this.setStage(stage, info), split);
       this.setStage('build');
       await new Promise((r) => setTimeout(r, 0));
       const model = new Model(result, name);
       this.setModel(model, { fileSize: size, totalMs: performance.now() - t0 });
+      const failed = result.stats.split?.failed ?? [];
+      if (failed.length) {
+        const names = failed.slice(0, 3).map((n) => `「${n}」`).join('、');
+        this.showToast(`有 ${failed.length} 个零件未能生成网格，未显示：${names}${failed.length > 3 ? ' 等' : ''}`, 'error');
+      }
     } catch (e) {
       if (!(e instanceof CancelledError)) this.showError(e);
     } finally {
@@ -235,10 +245,13 @@ class App {
     this.loadTimer = window.setInterval(tick, 250);
   }
 
-  private setStage(stage: Stage | 'download' | 'build'): void {
-    this.el.loadingStage.textContent = STAGE_TEXT[stage];
+  private setStage(stage: Stage | 'download' | 'build', info: StageInfo = {}): void {
+    // repeated progress reports of the same stage keep its start time
+    if (stage !== this.loadStage || info.progress === undefined) this.stageStart = performance.now();
     this.loadStage = stage;
-    this.stageStart = performance.now();
+    this.stageFraction = info.progress ?? null;
+    this.el.loadingStage.textContent =
+      stage === 'parse' && info.detail ? `大模型按零件逐个解析：${info.detail}…` : STAGE_TEXT[stage];
     this.updateProgress();
   }
 
@@ -246,7 +259,8 @@ class App {
     let p = STAGE_PROGRESS[this.loadStage];
     if (this.loadStage === 'parse') {
       const estimate = 1500 + (this.loadSize / 1e6) * PARSE_MS_PER_MB;
-      p += (STAGE_PROGRESS.edges - p) * Math.min(0.95, (performance.now() - this.stageStart) / estimate);
+      const f = this.stageFraction ?? Math.min(0.95, (performance.now() - this.stageStart) / estimate);
+      p += (STAGE_PROGRESS.edges - p) * f;
     }
     this.el.progressBar.style.width = `${(p * 100).toFixed(1)}%`;
   }
