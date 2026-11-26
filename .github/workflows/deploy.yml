@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry_1.outputs.page_url || steps.deployment_retry_2.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +46,30 @@ jobs:
         with:
           path: ./dist
 
+      # Right after the upload, deploy-pages sometimes does not find the artifact yet
+      # (actions/deploy-pages#451). Re-running the job cannot help: it uploads a second artifact,
+      # and the lookup then fails on finding two. So only the deploy is retried, after a pause.
+      # Drop the retries once deploy-pages retries the lookup itself (actions/deploy-pages#455).
       - name: Deploy to GitHub Pages
         id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: Wait before retrying the deploy
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 15
+
+      - name: Deploy to GitHub Pages (retry 1)
+        id: deployment_retry_1
+        if: steps.deployment.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: Wait before retrying the deploy again
+        if: steps.deployment_retry_1.outcome == 'failure'
+        run: sleep 45
+
+      - name: Deploy to GitHub Pages (retry 2)
+        id: deployment_retry_2
+        if: steps.deployment_retry_1.outcome == 'failure'
         uses: actions/deploy-pages@v4

@@ -41,6 +41,8 @@ Measure parse speed in headless Chrome. A tab with a debugger attached (for exam
 ## Deployment
 
 **Pushing to `main` publishes the public site.** `.github/workflows/deploy.yml` runs `npm ci`, `npm test` and `npm run build`, then deploys `dist/` to GitHub Pages at https://tony1213.github.io/step-viewer/.
+- The deploy step is retried inside the job, because deploy-pages sometimes doesn't find the artifact yet (actions/deploy-pages#451).
+- If a deploy still fails, start a fresh run with `gh workflow run deploy.yml`. Re-running the failed job uploads a second artifact and then fails on finding two.
 
 **Keep every URL relative.** `vite.config.ts` sets `base: './'`, so one build works both at `/` locally and under `/step-viewer/`.
 - Workers: `new URL('./x.worker.ts', import.meta.url)`.
