@@ -32,6 +32,7 @@ STEP_SAMPLE_LARGE=/path/big.STEP npm test   # part-by-part import of a file too 
 - `?model=<url>&name=<file>` fetches and opens a model. A file placed in `dist/` for this is deleted by the next build.
   - This is also the share link. When the 打开链接 panel has opened a model, `App` writes `?model=` into the address bar (`pageAddress` in `src/remote.ts`); opening a local file removes it again.
   - The other server must allow CORS. The deployed site is HTTPS, so it cannot fetch `http://` links.
+  - Feishu and cloud-drive links never allow CORS (they lead to a page or a login), so `resolveModelUrl` turns them down up front with a hint (`CLOUD_DRIVES`).
 - `?debug` exposes `window.stepViewer` (the App) and `window.stepViewerPick(x, y)` for browser automation.
 - `?split=1` forces part-by-part reading; `?split=0` disables it.
 

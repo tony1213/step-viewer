@@ -16,6 +16,25 @@ export interface DownloadProgress {
 const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 
 /**
+ * Online drives and document services, by host name. Their links lead to a web page, usually behind
+ * a login, and never to a file another site may read (no CORS). They are turned down before any
+ * download, with a hint instead of the generic CORS message.
+ */
+const CLOUD_DRIVES: [RegExp, string][] = [
+  [/(^|\.)(feishu\.cn|larksuite\.com|larkoffice\.com)$/, '飞书'],
+  [/(^|\.)dingtalk\.com$/, '钉钉'],
+  [/^drive\.weixin\.qq\.com$/, '企业微信微盘'],
+  [/^docs\.qq\.com$/, '腾讯文档'],
+  [/(^|\.)weiyun\.com$/, '腾讯微云'],
+  [/(^|\.)kdocs\.cn$/, '金山文档'],
+  [/^(pan|yun)\.baidu\.com$/, '百度网盘'],
+  [/(^|\.)(aliyundrive|alipan)\.com$/, '阿里云盘'],
+  [/^pan\.quark\.cn$/, '夸克网盘'],
+  [/(^|\.)jianguoyun\.com$/, '坚果云'],
+  [/(^|\.)lanzou[a-z]?\.com$/, '蓝奏云'],
+];
+
+/**
  * Where to download the model named by `input` (typed into the panel, or taken from ?model=),
  * resolved against the page address. `typed`: an address without a scheme gets https://.
  */
@@ -33,6 +52,10 @@ export function resolveModelUrl(input: string, page: string, typed = false): URL
     throw new Error('网址格式不正确。');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('只能打开以 http:// 或 https:// 开头的网址。');
+  const drive = CLOUD_DRIVES.find(([host]) => host.test(url.hostname))?.[1];
+  if (drive) {
+    throw new Error(`这是${drive}的网页链接，不是模型文件本身。${drive}不允许其他网页直接读取其中的文件：请先在${drive}里下载，再把文件拖进本页面（或点「打开文件」）。`);
+  }
   if (new URL(page).protocol === 'https:' && url.protocol === 'http:' && !LOOPBACK.test(url.hostname)) {
     throw new Error('本页面是 HTTPS 网页，浏览器不允许它从 http:// 网址下载文件：请改用 https:// 网址，或在本机运行本工具后再打开。');
   }
@@ -88,7 +111,7 @@ export async function downloadModel(url: URL, signal?: AbortSignal, onProgress?:
   } catch (e) {
     if (signal?.aborted) throw e;
     // the browser deliberately does not say which: network error, CORS refusal, blocked request …
-    throw new Error('无法下载该文件：网址无法访问，或者对方服务器不允许跨域读取（CORS）。可以先在浏览器地址栏直接打开这个网址，看文件能否下载。');
+    throw new Error('无法下载该文件：网址无法访问，或者对方服务器不允许其他网页读取它的文件（CORS）。请先在浏览器里打开这个网址，把文件下载到本机，再拖进本页面。');
   }
   if (!res.ok) throw httpError(res.status);
   const bytes = await readBody(res, signal, onProgress);

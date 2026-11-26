@@ -26,6 +26,16 @@ describe('resolveModelUrl', () => {
     expect(() => resolveModelUrl('ftp://example.com/a.step', PAGE)).toThrow('http');
   });
 
+  it('turns down Feishu and cloud-drive links with a hint, before any download', () => {
+    expect(() => resolveModelUrl('https://example.feishu.cn/drive/folder/AbCd123?from=space_personal_filelist', PAGE)).toThrow('这是飞书的网页链接');
+    expect(() => resolveModelUrl('example.feishu.cn/file/AbCd123', PAGE, true)).toThrow('请先在飞书里下载');
+    expect(() => resolveModelUrl('https://pan.baidu.com/s/1AbCd', PAGE)).toThrow('百度网盘');
+    expect(() => resolveModelUrl('https://www.alipan.com/s/AbCd', PAGE)).toThrow('阿里云盘');
+    // only the services themselves, not look-alike hosts
+    expect(resolveModelUrl('https://feishu.cn.example.com/a.step', PAGE).hostname).toBe('feishu.cn.example.com');
+    expect(resolveModelUrl('https://notfeishu.cn/a.step', PAGE).hostname).toBe('notfeishu.cn');
+  });
+
   it('refuses http:// from an https:// page (mixed content), except loopback', () => {
     expect(() => resolveModelUrl('http://example.com/a.step', PAGE)).toThrow('HTTPS');
     expect(resolveModelUrl('http://127.0.0.1:8000/a.step', PAGE).href).toBe('http://127.0.0.1:8000/a.step');
