@@ -139,6 +139,20 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 
+/* the full toolbar needs about 1420 px: below that it gets tighter and 「打开链接」 shrinks to its
+   icon, so it still fits on one row at 1366 px */
+@media (max-width: 1439px) {
+  .toolbar .tb-group {
+    padding-right: 5px;
+  }
+  .toolbar .tb-collapse {
+    padding: 0 7px;
+  }
+  .tb-collapse .tb-label {
+    display: none;
+  }
+}
+
 @media (max-width: 1100px) {
   #app {
     grid-template-columns: 240px minmax(0, 1fr) 0;
@@ -656,7 +670,10 @@ svg {
   color: var(--text-2);
 }
 
-.empty-card .btn {
+.empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
   margin-top: 14px;
 }
 
@@ -789,6 +806,43 @@ svg {
   left: auto;
   right: 10px;
   width: 320px;
+}
+
+/* above the loading card, so another link can be opened while one is still loading */
+.url-panel {
+  left: 50%;
+  width: min(560px, calc(100% - 24px));
+  transform: translateX(-50%);
+  z-index: 16;
+}
+
+.url-panel input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.url-panel input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.url-error,
+.url-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.url-error {
+  color: var(--danger);
+}
+
+.url-note {
+  color: var(--text-3);
 }
 
 .float-head {

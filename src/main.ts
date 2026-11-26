@@ -1,5 +1,6 @@
 import './style.css';
 import { CancelledError, ModelLoader } from './loader';
+import { downloadModel, fileNameOf, pageAddress, resolveModelUrl, type DownloadProgress } from './remote';
 import { loadSettings, saveSettings } from './settings';
 import { $, esc, fmtInt, fmtSeconds, fmtSize } from './ui/dom';
 import { InfoPanel } from './ui/info-panel';
@@ -32,6 +33,8 @@ const STAGE_PROGRESS: Record<Stage | 'download' | 'build', number> = {
   build: 0.97,
 };
 const PARSE_MS_PER_MB = 650;
+/** share of the progress bar given to downloading a model opened from a link */
+const DOWNLOAD_SHARE = 0.3;
 
 const VIEW_KEYS: Record<string, ViewName> = { '1': 'front', '2': 'back', '3': 'left', '4': 'right', '5': 'top', '6': 'bottom', '7': 'iso', '0': 'iso' };
 
@@ -56,6 +59,14 @@ class App {
   private stageStart = 0;
   /** measured progress inside the current stage (part-by-part reading), null = estimate from time */
   private stageFraction: number | null = null;
+  /** Every load gets a number. 取消 or a newer load makes an older one stale: it no longer touches the UI. */
+  private loadSeq = 0;
+  private loadStart = 0;
+  private download: AbortController | null = null;
+  /** progress of downloading a model opened from a link (null for local files) */
+  private downloaded: DownloadProgress | null = null;
+  private downloadFraction = 0;
+  private downloadShare = 0;
 
   private readonly el = {
     app: $('#app'),
@@ -80,6 +91,9 @@ class App {
     explodeRange: $<HTMLInputElement>('#explode-range'),
     explodeValue: $('#explode-value'),
     helpPanel: $('#help-panel'),
+    urlPanel: $<HTMLFormElement>('#url-panel'),
+    urlInput: $<HTMLInputElement>('#url-input'),
+    urlError: $('#url-error'),
     upAxis: $<HTMLSelectElement>('#up-axis'),
     displayMode: $<HTMLSelectElement>('#display-mode'),
     search: $<HTMLInputElement>('#tree-search'),
@@ -116,8 +130,9 @@ class App {
     this.bindViewport();
     this.bindKeyboard();
     this.bindDragDrop();
+    this.bindUrlPanel();
     this.syncToolbar();
-    void this.openFromUrl();
+    this.openFromAddress();
   }
 
   // ---------------------------------------------------------------------------
@@ -125,59 +140,100 @@ class App {
   // ---------------------------------------------------------------------------
 
   private async openFile(file: File): Promise<void> {
-    const t0 = performance.now();
-    this.showLoading(file.name, file.size, t0);
-    this.setStage('download');
+    const seq = this.beginLoad(file.name, file.size, false);
     try {
       const buffer = await file.arrayBuffer();
-      await this.openBuffer(file.name, buffer, t0);
+      if (seq !== this.loadSeq) return;
+      if (await this.openBuffer(seq, file.name, buffer)) this.setAddressModel(null);
     } catch (e) {
-      this.hideLoading();
-      this.showError(e);
+      this.failLoad(seq, e);
     }
   }
 
-  /** ?model=<url>&name=<file name> loads a model served over HTTP (handy for testing / links). */
-  private async openFromUrl(): Promise<void> {
+  /** ?model=<url>&name=<file name> opens a model from the web on start-up (shared links, tests). */
+  private openFromAddress(): void {
     const params = new URLSearchParams(location.search);
-    const url = params.get('model');
-    if (!url) return;
-    const name = params.get('name') || decodeURIComponent(url.split('?')[0].split('/').pop() || '') || 'model.step';
-    const t0 = performance.now();
-    this.showLoading(name, 0, t0);
-    this.setStage('download');
+    const model = params.get('model');
+    if (!model) return;
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`无法下载模型（HTTP ${res.status}）`);
-      await this.openBuffer(name, await res.arrayBuffer(), t0);
+      const url = resolveModelUrl(model, location.href);
+      void this.openUrl(url, params.get('name') || fileNameOf(url));
     } catch (e) {
-      this.hideLoading();
       this.showError(e);
     }
   }
 
-  private async openBuffer(name: string, buffer: ArrayBuffer, t0: number): Promise<void> {
-    const size = buffer.byteLength;
-    this.showLoading(name, size, t0);
+  /** Downloads and opens a model. `share`: once it is shown, its address goes into the address bar. */
+  private async openUrl(url: URL, name: string, share = false): Promise<void> {
+    const seq = this.beginLoad(name, 0, true);
+    const download = new AbortController();
+    this.download = download;
     try {
-      // ?split=1 / ?split=0 forces / forbids reading STEP files part by part (default: by file size)
-      const splitParam = new URLSearchParams(location.search).get('split');
-      const split = splitParam === '1' ? true : splitParam === '0' ? false : undefined;
-      const result = await this.loader.load(name, buffer, (stage, info) => this.setStage(stage, info), split);
-      this.setStage('build');
-      await new Promise((r) => setTimeout(r, 0));
-      const model = new Model(result, name);
-      this.setModel(model, { fileSize: size, totalMs: performance.now() - t0 });
-      const failed = result.stats.split?.failed ?? [];
-      if (failed.length) {
-        const names = failed.slice(0, 3).map((n) => `「${n}」`).join('、');
-        this.showToast(`有 ${failed.length} 个零件未能生成网格，未显示：${names}${failed.length > 3 ? ' 等' : ''}`, 'error');
-      }
+      const buffer = await downloadModel(url, download.signal, (p) => (this.downloaded = p));
+      if (seq !== this.loadSeq) return;
+      this.download = null;
+      if ((await this.openBuffer(seq, name, buffer)) && share) this.setAddressModel(url.href);
     } catch (e) {
-      if (!(e instanceof CancelledError)) this.showError(e);
-    } finally {
-      this.hideLoading();
+      this.failLoad(seq, e);
     }
+  }
+
+  /** Parses a file that was read or downloaded, and shows it. False when the load went stale. */
+  private async openBuffer(seq: number, name: string, buffer: ArrayBuffer): Promise<boolean> {
+    const size = buffer.byteLength;
+    this.downloaded = null;
+    this.showLoading(name, size);
+    // ?split=1 / ?split=0 forces / forbids reading STEP files part by part (default: by file size)
+    const splitParam = new URLSearchParams(location.search).get('split');
+    const split = splitParam === '1' ? true : splitParam === '0' ? false : undefined;
+    const result = await this.loader.load(name, buffer, (stage, info) => this.setStage(stage, info), split);
+    if (seq !== this.loadSeq) return false;
+    this.setStage('build');
+    await new Promise((r) => setTimeout(r, 0));
+    if (seq !== this.loadSeq) return false;
+    const model = new Model(result, name);
+    this.setModel(model, { fileSize: size, totalMs: performance.now() - this.loadStart });
+    this.hideLoading();
+    const failed = result.stats.split?.failed ?? [];
+    if (failed.length) {
+      const names = failed.slice(0, 3).map((n) => `「${n}」`).join('、');
+      this.showToast(`有 ${failed.length} 个零件未能生成网格，未显示：${names}${failed.length > 3 ? ' 等' : ''}`, 'error');
+    }
+    return true;
+  }
+
+  /** Starts a load (cancelling the one still running) and shows the loading card. */
+  private beginLoad(name: string, size: number, remote: boolean): number {
+    this.abortLoad();
+    this.loadStart = performance.now();
+    this.downloadShare = remote ? DOWNLOAD_SHARE : 0;
+    this.downloaded = remote ? { loaded: 0, total: null } : null;
+    this.downloadFraction = 0;
+    this.showLoading(name, size);
+    this.setStage('download');
+    return this.loadSeq;
+  }
+
+  /** 取消, or a newer load: stops the download / parse in progress, whose promises then go stale. */
+  private abortLoad(): void {
+    this.loadSeq++;
+    this.download?.abort();
+    this.download = null;
+    this.loader.cancel();
+    this.hideLoading();
+  }
+
+  private failLoad(seq: number, e: unknown): void {
+    if (seq !== this.loadSeq) return; // cancelled or replaced by a newer load: not an error
+    this.download = null;
+    this.hideLoading();
+    if (!(e instanceof CancelledError)) this.showError(e);
+  }
+
+  /** Keeps ?model= in the address bar in step with the model shown, so the address can be shared or reloaded. */
+  private setAddressModel(model: string | null): void {
+    const href = pageAddress(location.href, model);
+    if (href !== location.href) history.replaceState(history.state, '', href);
   }
 
   private setModel(model: Model, extra: { fileSize: number; totalMs: number }): void {
@@ -232,13 +288,13 @@ class App {
     this.tree.setModel(null);
   }
 
-  private showLoading(name: string, size: number, t0: number): void {
+  private showLoading(name: string, size: number): void {
     this.el.loading.hidden = false;
     this.el.loadingFile.textContent = size ? `${name}（${fmtSize(size)}）` : name;
     this.loadSize = size;
     window.clearInterval(this.loadTimer);
     const tick = () => {
-      this.el.loadingTime.textContent = `已用 ${fmtSeconds(performance.now() - t0)}`;
+      this.el.loadingTime.textContent = `已用 ${fmtSeconds(performance.now() - this.loadStart)}`;
       this.updateProgress();
     };
     tick();
@@ -256,11 +312,24 @@ class App {
   }
 
   private updateProgress(): void {
-    let p = STAGE_PROGRESS[this.loadStage];
-    if (this.loadStage === 'parse') {
-      const estimate = 1500 + (this.loadSize / 1e6) * PARSE_MS_PER_MB;
-      const f = this.stageFraction ?? Math.min(0.95, (performance.now() - this.stageStart) / estimate);
-      p += (STAGE_PROGRESS.edges - p) * f;
+    let p: number;
+    const d = this.downloaded;
+    if (this.loadStage === 'download' && d) {
+      // a model opened from a link: the download fills the first part of the bar (download chunks
+      // only store their progress; this runs from the 250 ms tick)
+      if (d.total) this.downloadFraction = Math.max(this.downloadFraction, Math.min(1, d.loaded / d.total));
+      this.el.loadingStage.textContent = d.loaded
+        ? `正在下载：${fmtSize(d.loaded)}${d.total ? ` / ${fmtSize(d.total)}（${Math.round((100 * d.loaded) / d.total)}%）` : ''}`
+        : '正在下载…';
+      p = this.downloadShare * this.downloadFraction;
+    } else {
+      p = STAGE_PROGRESS[this.loadStage];
+      if (this.loadStage === 'parse') {
+        const estimate = 1500 + (this.loadSize / 1e6) * PARSE_MS_PER_MB;
+        const f = this.stageFraction ?? Math.min(0.95, (performance.now() - this.stageStart) / estimate);
+        p += (STAGE_PROGRESS.edges - p) * f;
+      }
+      p = this.downloadShare + (1 - this.downloadShare) * p;
     }
     this.el.progressBar.style.width = `${(p * 100).toFixed(1)}%`;
   }
@@ -329,8 +398,12 @@ class App {
         return this.tree.expandAll(false);
       case 'show-all':
         return this.showAll();
+      case 'open-url':
+        return this.toggleUrlPanel(true);
+      case 'close-url':
+        return this.toggleUrlPanel(false);
       case 'cancel-load':
-        return this.loader.cancel();
+        return this.abortLoad();
       case 'close-toast':
         return this.hideToast();
       case 'clear-measure':
@@ -665,6 +738,10 @@ class App {
 
   private onEscape(): void {
     this.hideContextMenu();
+    if (!this.el.urlPanel.hidden) {
+      this.toggleUrlPanel(false);
+      return;
+    }
     if (!this.el.helpPanel.hidden) {
       this.el.helpPanel.hidden = true;
       return;
@@ -705,6 +782,51 @@ class App {
       const f = e.dataTransfer!.files[0];
       if (f) void this.openFile(f);
     });
+  }
+
+  /** 「打开链接」: paste a model's web address. */
+  private bindUrlPanel(): void {
+    const { urlPanel, urlInput, urlError } = this.el;
+    urlPanel.addEventListener('submit', (e) => {
+      e.preventDefault();
+      this.submitUrl();
+    });
+    // the window shortcut handler ignores keys typed into inputs
+    urlPanel.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.toggleUrlPanel(false);
+    });
+    urlInput.addEventListener('input', () => (urlError.hidden = true));
+  }
+
+  private toggleUrlPanel(open: boolean): void {
+    const { urlPanel, urlInput, urlError } = this.el;
+    urlPanel.hidden = !open;
+    urlError.hidden = true;
+    if (!open) return;
+    // start from the link of the model shown, if it came from one
+    if (!urlInput.value) {
+      const model = new URLSearchParams(location.search).get('model');
+      try {
+        if (model) urlInput.value = resolveModelUrl(model, location.href).href;
+      } catch {
+        /* not a usable address: leave the field empty */
+      }
+    }
+    urlInput.focus();
+    urlInput.select();
+  }
+
+  private submitUrl(): void {
+    let url: URL;
+    try {
+      url = resolveModelUrl(this.el.urlInput.value, location.href, true);
+    } catch (e) {
+      this.el.urlError.textContent = e instanceof Error ? e.message : String(e);
+      this.el.urlError.hidden = false;
+      return;
+    }
+    this.toggleUrlPanel(false);
+    void this.openUrl(url, fileNameOf(url), true);
   }
 
   // ---------------------------------------------------------------------------
